@@ -15,6 +15,7 @@ export class HUD {
       hour: document.getElementById('hud-hour'),
       mass: document.getElementById('hud-mass'),
       fps: document.getElementById('hud-fps'),
+      quality: document.getElementById('hud-quality'),
     };
     this.acc = 0;
     this.fpsSmooth = 60;
@@ -43,6 +44,7 @@ export class HUD {
     set(e.hour, formatHour(data.hour));
     set(e.mass, `${(data.mass / 1000).toFixed(1)} t`);
     set(e.fps, `${Math.round(this.fpsSmooth)}`);
+    if (e.quality) set(e.quality, data.quality || '—');
   }
 }
 

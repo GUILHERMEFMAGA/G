@@ -71,7 +71,26 @@ Resultados medidos (`npm run test:physics`):
 
 Custo: **~0,25 ms por frame** de simulação (120 sondas × 16 ondas × 2 sub-passos).
 
-### 3. Renderização
+### 3. O barco
+
+O casco é uma superfície **loftada** (proa em V, popa truncada), com texto de
+gelcoat procedural, obra-viva, faixa e borda — nada de modelo importado.
+
+- **Convés de teca** com tábuas, calafeto, juntas de topo e manchas de sal,
+  desenhado em canvas e mapeado em coordenadas de mundo;
+- **casario com aberturas reais**: os painéis de fibra são montados com vãos de
+  janela de verdade, não com adesivos escuros;
+- **vidro reflexivo**: metal puro + `opacity 0.34` — reflete o céu pelo
+  environment map (35%) e **deixa ver o interior** (65%);
+- **interior mobiliado**: piso, beliches com almofadas de tecido, mesa, cozinha,
+  anteparo e luminárias emissivas + uma luz pontual quente — à noite a cabine
+  acende e a luz aparece pelas janelas;
+- cockpit rebaixado (o poço é recortado na grade do convés), bancos, roda do leme,
+  grade de proteção, púlpitos, gaiutas, catracas e luzes de navegação;
+- ~29 malhas no total: as peças pequenas são **fundidas por material**
+  (`mergeGeometries`), então o barco inteiro custa ~13 draw calls por material.
+
+### 4. Renderização
 
 Pipeline por frame (tudo em HDR linear, tone mapping só no fim):
 
@@ -100,9 +119,27 @@ importa.
 
 ---
 
+### 5. Desempenho (engenharia, não sorte)
+
+O app é feito para não travar em máquina nenhuma:
+
+| Técnica | Efeito |
+| --- | --- |
+| **Resolução adaptativa** (`FrameGovernor`) | mede a mediana de janelas de ~1 s e sobe/desce a resolução em 6 degraus (100% → 55%) com histerese e cooldown de 900 ms. Nunca oscila a cada quadro |
+| **Passo fixo na física** | acumulador de 1/120 s com no máximo 6 passos por frame: a dinâmica é idêntica a 30, 60 ou 144 Hz e não há "spiral of death" |
+| **Reflexão em resolução menor, todo quadro** | cadência constante. Alternar "com/sem reflexão" dobra a variação do tempo de quadro — o olho lê isso como travamento. Resolução menor todo quadro é lisa |
+| **Pré-compilação dos shaders** | `renderer.compile()` antes do primeiro quadro: o pior engasgo é sempre o de compilar shader na primeira interação |
+| **Oceano segue a câmera continuamente** | antes ele "pulava" de 22 em 22 m, trocando a tesselação de uma vez e dando um tranco ao orbitar |
+| **Câmera com alvo filtrado** | o alvo separa deriva (rápido) de sobe-e-desce das ondas (lento): a câmera acompanha o barco sem tremer junto com o casco |
+| **Zero alocação no loop** | vetores, objetos de input e uniformes são reutilizados; o HUD escreve no DOM a 6 Hz |
+| **MSAA adaptativo** | 4 amostras em telas normais, 2 em retina (dpr > 1.5) |
+
+O painel **Desempenho** mostra e controla tudo: resolução adaptativa ligada/desligada,
+escala manual e resolução da reflexão. O HUD mostra a resolução efetiva em uso.
+
 ## Controles
 
-- **Arrastar** orbita · **scroll** dá zoom
+- **Arrastar** orbita · **scroll** dá zoom (a câmera acompanha o barco sem tremer)
 - **W / S** acelera / ré · **A / D** leme · **Espaço** pausa o mar
 - Painel à direita: vento (m/s), direção, altura das ondas, cristas, hora do dia,
   nebulosidade, espuma, translucidez, ondulação fina, todas as constantes da
@@ -120,7 +157,7 @@ src/sky/{Sky,Atmosphere}.js   domo celeste e modelo de luz do dia
 src/boat/Boat.js          casco loftado, convés, cabine, mastro, velas, sondas
 src/physics/BoatPhysics.js  corpo rígido, empuxo, arrasto, vento, leme
 src/shaders/*.glsl        ocean, sky, post
-src/util/{math,textures}.js  constantes, PRNG, texturas procedurais
+src/util/{math,textures,Perf}.js  constantes, texturas procedurais e governador de quadro
 scripts/check.js          validação estática dos shaders
 scripts/testPhysics.js    bancada de teste da física (sem navegador)
 ```

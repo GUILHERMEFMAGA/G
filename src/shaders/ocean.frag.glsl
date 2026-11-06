@@ -42,6 +42,10 @@ uniform sampler2D uReflection;
 uniform sampler2D uFoamTex;
 uniform sampler2D uRippleTex;
 uniform float uRippleStrength;
+uniform vec2 uBoatPos;
+uniform vec2 uBoatFwd;
+uniform vec2 uBoatSize;
+uniform float uBoatShadow;
 uniform mat4 uReflectionMatrix;
 
 varying vec3 vWorldPos;
@@ -145,7 +149,21 @@ void main() {
   float Gs = smithG(ndl, ndv, a * 0.5);
   float Fs = 0.02 + 0.98 * pow(1.0 - vdh, 5.0);
   float spec = (D * Gs * Fs) / max(4.0 * ndl * ndv, 1e-3);
+  // sombra de contato / oclusão do casco: a água imediatamente em volta do
+  // barco recebe menos luz direta (aproximação da oclusão real do casco).
+  // referencial do barco: elipse do casco em (comprimento, boca)
+  vec2 relBoat = vWorldPos.xz - uBoatPos;
+  float bAlong = dot(relBoat, uBoatFwd);
+  float bAcross = dot(relBoat, vec2(-uBoatFwd.y, uBoatFwd.x));
+  vec2 bq = vec2(bAlong / (uBoatSize.x + 0.9), bAcross / (uBoatSize.y + 0.75));
+  float hullE = length(bq);
+  float hullAO = exp(-pow(max(hullE - 0.62, 0.0) * 2.0, 2.0)) * uBoatShadow;
+  // faixa de contato: a água encostada no casco (linha d'água + respingo)
+  float contact = smoothstep(1.02, 0.90, hullE) * smoothstep(0.82, 1.00, hullE);
+  spec *= 1.0 - 0.85 * hullAO;
+
   col += uSunColor * spec * ndl * uSunSpecular * (1.0 - fres * 0.7);
+  col *= 1.0 - 0.26 * hullAO;
 
   // ---------------- espuma ----------------
   // A espuma nasce onde a superfície se comprime (Jacobiano < 1): é ali que a
@@ -167,6 +185,8 @@ void main() {
   foam *= uFoamStrength;
   foam *= 1.0 - 0.5 * smoothstep(0.4, 0.95, ndv); // espuma clinada para a câmera some um pouco
   foam *= 0.55 + 0.45 * smoothstep(0.0, 30.0, dist);
+  // espuminha na linha d'água do casco (só perto do barco)
+  foam += contact * (0.16 + 0.34 * smoothstep(0.30, 0.72, bubbles)) * uBoatShadow;
 
   vec3 foamLit = uFoamColor * (0.35 + 0.75 * max(ndl, 0.0)) + skyAmbient * 0.35;
   col = mix(col, foamLit, clamp(foam, 0.0, 1.0));

@@ -72,7 +72,24 @@ export function createGUI(params, cb) {
     .name('Modo')
     .onChange((v) => cb.onCameraMode(v));
   fCam.add(params, 'fov', 35, 90, 1).name('Campo de visão').onChange(() => cb.onFov());
+  fCam.add(params, 'cameraSmoothing', 0, 1, 0.01).name('Suavização do alvo');
   fCam.close();
+
+  // ---------------------------------------------------------------- desempenho
+  const fPerf = gui.addFolder('Desempenho');
+  fPerf
+    .add(params, 'autoQuality')
+    .name('Resolução adaptativa')
+    .onChange((v) => cb.onQualityMode(v));
+  fPerf
+    .add(params, 'resolutionScale', 0.5, 1.5, 0.05)
+    .name('Escala de resolução')
+    .onChange((v) => cb.onResolution(v));
+  fPerf
+    .add(params, 'reflectionScale', 0.25, 0.75, 0.05)
+    .name('Resolução da reflexão')
+    .onChange(() => cb.onResolution(params.resolutionScale));
+  fPerf.close();
 
   return gui;
 }

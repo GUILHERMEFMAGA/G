@@ -86,6 +86,10 @@ export class Ocean {
       uFoamTex: { value: foamTexture },
       uRippleTex: { value: rippleTexture },
       uRippleStrength: { value: 0.85 },
+      uBoatPos: { value: new THREE.Vector2(0, 0) },
+      uBoatFwd: { value: new THREE.Vector2(1, 0) },
+      uBoatSize: { value: new THREE.Vector2(4.2, 1.45) },
+      uBoatShadow: { value: 0.0 },
       uReflectionMatrix: { value: new THREE.Matrix4() },
     };
 
@@ -106,20 +110,23 @@ export class Ocean {
     this.mesh.renderOrder = 2;
     this.mesh.name = 'ocean';
 
-    this._followThreshold = 22;
     this._target = new THREE.Vector3();
   }
 
-  /** Acompanha a câmera mantendo a malha densa sob o ponto de vista. */
+  /**
+   * Acompanha a câmera mantendo a malha densa sob o ponto de vista.
+   *
+   * O deslocamento das ondas é calculado em espaço de MUNDO, então mover a
+   * malha é invisível para a superfície — mas pular de 22 em 22 metros
+   * (como era antes) trocava a tesselação de uma vez e dava um "tranco"
+   * perceptível ao orbitar. Seguir de forma contínua elimina o tranco por
+   * completo, e custa o mesmo (só a matriz do objeto muda).
+   */
   follow(camera) {
-    const dx = camera.position.x - this.mesh.position.x;
-    const dz = camera.position.z - this.mesh.position.z;
-    if (dx * dx + dz * dz > this._followThreshold * this._followThreshold) {
-      this.mesh.position.set(camera.position.x, 0, camera.position.z);
-    }
+    this.mesh.position.set(camera.position.x, 0, camera.position.z);
   }
 
-  update({ time, camera, atmosphere, reflectionTexture, reflectionMatrix, params }) {
+  update({ time, camera, atmosphere, reflectionTexture, reflectionMatrix, boatPosition, boatForward, boatSize, params }) {
     const u = this.uniforms;
     u.uTime.value = time;
     u.uCameraPos.value.copy(camera.position);
@@ -132,6 +139,13 @@ export class Ocean {
 
     u.uMaxAmp.value = Math.max(this.waveField.maxAmp, 0.25);
     u.uWindDir.value.set(this.waveField.windDir.x, this.waveField.windDir.z);
+
+    if (boatPosition) {
+      u.uBoatPos.value.set(boatPosition.x, boatPosition.z);
+      if (boatForward) u.uBoatFwd.value.set(boatForward.x, boatForward.z).normalize();
+      if (boatSize) u.uBoatSize.value.set(boatSize.x, boatSize.y);
+      u.uBoatShadow.value = params ? params.hullShadow : 1;
+    }
 
     if (reflectionTexture) u.uReflection.value = reflectionTexture;
     if (reflectionMatrix) u.uReflectionMatrix.value.copy(reflectionMatrix);

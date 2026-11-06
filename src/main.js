@@ -2,10 +2,16 @@
  * OCEANO 3D — mar espectral em tempo real com física de flutuação.
  *
  * Pipeline por frame:
- *   1. física do barco (sub-passos de 1/120 s) contra o mesmo campo de ondas;
- *   2. passe de reflexão (câmera espelhada, half-res, HDR);
+ *   1. física do barco (passo fixo de 1/120 s, acumulador) contra o mesmo campo
+ *      de ondas que é desenhado;
+ *   2. passe de reflexão (câmera espelhada, half-res, HDR) — em cadência
+ *      reduzida quando o governador de quadro aperta;
  *   3. passe principal em HDR (céu + água + barco);
  *   4. passe final: exposição, ACES, vinheta e sRGB.
+ *
+ * Desempenho: a resolução de render é ajustada por um governador de quadro
+ * (FrameGovernor) para manter o frame dentro do orçamento de 60 Hz, sem
+ * oscilar. Nada é alocado dentro do loop.
  */
 
 import * as THREE from 'three';
@@ -18,6 +24,7 @@ import { Atmosphere } from './sky/Atmosphere.js';
 import { Boat } from './boat/Boat.js';
 import { BoatPhysics } from './physics/BoatPhysics.js';
 import { createFoamTexture, createRippleNormalTexture } from './util/textures.js';
+import { FrameGovernor } from './util/Perf.js';
 import { HUD } from './ui/HUD.js';
 import { createGUI } from './ui/Gui.js';
 import { beaufort, clamp, degToRad } from './util/math.js';
@@ -36,12 +43,13 @@ const params = {
   timeScale: 1,
   paused: false,
 
-  foam: 1.0,
+  foam: 0.8,
   foamThreshold: 0.88,
   sss: 1.0,
   detail: 1.0,
   roughness: 0.06,
   sunGlitter: 0.8,
+  hullShadow: 1.0,
 
   hour: 16.9,
   cloudCover: 0.30,
@@ -58,6 +66,11 @@ const params = {
 
   cameraMode: 'Órbita',
   fov: 52,
+  cameraSmoothing: 1.0,
+
+  autoQuality: true,
+  resolutionScale: 1.0,
+  reflectionScale: 0.5,
 };
 
 // ---------------------------------------------------------------------------
@@ -69,10 +82,13 @@ const renderer = new THREE.WebGLRenderer({
   antialias: false,
   alpha: false,
   stencil: false,
+  depth: true,
   powerPreference: 'high-performance',
 });
-const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
-renderer.setPixelRatio(dpr);
+const baseDpr = Math.min(window.devicePixelRatio || 1, 1.75);
+let renderScale = 1;
+
+renderer.setPixelRatio(baseDpr);
 renderer.setSize(window.innerWidth, window.innerHeight, false);
 renderer.setClearColor(0x05080c, 1);
 // O tone mapping é feito no passe final: aqui tudo permanece linear (HDR).
@@ -82,6 +98,8 @@ renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 const canFloat = renderer.extensions.has('EXT_color_buffer_float') ||
   renderer.extensions.has('EXT_color_buffer_half_float');
 const hdrType = canFloat ? THREE.HalfFloatType : THREE.UnsignedByteType;
+// MSAA custa memória de banda: 4 amostras em telas grandes e 2 em retina.
+const msaaSamples = baseDpr > 1.5 ? 2 : 4;
 
 const mainRT = new THREE.WebGLRenderTarget(2, 2, {
   type: hdrType,
@@ -89,7 +107,7 @@ const mainRT = new THREE.WebGLRenderTarget(2, 2, {
   magFilter: THREE.LinearFilter,
   depthBuffer: true,
   stencilBuffer: false,
-  samples: 4,
+  samples: msaaSamples,
 });
 
 const reflRT = new THREE.WebGLRenderTarget(2, 2, {
@@ -188,22 +206,23 @@ postScene.add(postQuad);
 // ---------------------------------------------------------------------------
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
-controls.dampingFactor = 0.075;
+controls.dampingFactor = 0.09;
 controls.rotateSpeed = 0.55;
 controls.zoomSpeed = 0.9;
 controls.panSpeed = 0.6;
-controls.minDistance = 7;
+controls.minDistance = 6.5;
 controls.maxDistance = 320;
 controls.maxPolarAngle = Math.PI * 0.497;
 controls.enablePan = false;
+controls.screenSpacePanning = false;
 
 const boatFocus = new THREE.Vector3().copy(boat.group.position).add(new THREE.Vector3(0, 1.0, 0));
 const sunAzimuth = Math.atan2(atmosphere.sunDir.x, atmosphere.sunDir.z);
 const viewAzimuth = sunAzimuth - degToRad(27);
-const orbitRadius = 21;
+const orbitRadius = 16.5;
 camera.position.set(
   boat.group.position.x - Math.sin(viewAzimuth) * orbitRadius,
-  3.0,
+  2.45,
   boat.group.position.z - Math.cos(viewAzimuth) * orbitRadius
 );
 camera.lookAt(boatFocus);
@@ -211,15 +230,21 @@ controls.target.copy(boatFocus);
 camera.updateProjectionMatrix();
 
 const lookTarget = boatFocus.clone();
+/** Alvo filtrado: o barco sobe e desce com as ondas; a câmera não precisa. */
+const smoothFocus = boatFocus.clone();
 const tmpVec = new THREE.Vector3();
 const tmpVec2 = new THREE.Vector3();
 const tmpVec3 = new THREE.Vector3();
 const upVec = new THREE.Vector3(0, 1, 0);
+const boatForward = new THREE.Vector3(1, 0, 0);
+const boatHalfSize = new THREE.Vector2(boat.length * 0.5, boat.beam * 0.5);
 
 // ---------------------------------------------------------------------------
 // Entrada do usuário
 // ---------------------------------------------------------------------------
 const keys = new Set();
+const input = { thrust: 0, rudder: 0 };
+
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     params.paused = !params.paused;
@@ -246,6 +271,8 @@ function refreshWaves() {
   waveField.rebuild();
 }
 
+const governor = new FrameGovernor({ enabled: params.autoQuality });
+
 const gui = createGUI(params, {
   onWind: refreshWaves,
   onReseed: () => {
@@ -270,22 +297,44 @@ const gui = createGUI(params, {
     camera.fov = params.fov;
     camera.updateProjectionMatrix();
   },
+  onQualityMode: (auto) => {
+    governor.setEnabled(auto);
+    renderScale = governor.scale;
+    resize();
+  },
+  onResolution: (s) => {
+    governor.setManualScale(s);
+    if (!params.autoQuality) {
+      renderScale = s;
+      resize();
+    }
+  },
 });
 gui.domElement.style.pointerEvents = 'auto';
 
 // ---------------------------------------------------------------------------
 // Render alvo / resize
 // ---------------------------------------------------------------------------
+function resizeTargets() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const dpr = baseDpr * renderScale;
+  const pw = Math.max(2, Math.floor(w * dpr));
+  const ph = Math.max(2, Math.floor(h * dpr));
+  mainRT.setSize(pw, ph);
+  const rs = params.autoQuality ? governor.reflectionScale : params.reflectionScale;
+  reflRT.setSize(Math.max(2, Math.floor(pw * rs)), Math.max(2, Math.floor(ph * rs)));
+  postMaterial.uniforms.uResolution.value.set(pw, ph);
+}
+
 function resize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
-  renderer.setPixelRatio(dpr);
+  renderer.setPixelRatio(baseDpr * renderScale);
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  mainRT.setSize(Math.max(2, Math.floor(w * dpr)), Math.max(2, Math.floor(h * dpr)));
-  reflRT.setSize(Math.max(2, Math.floor(w * dpr * 0.5)), Math.max(2, Math.floor(h * dpr * 0.5)));
-  postMaterial.uniforms.uResolution.value.set(w * dpr, h * dpr);
+  resizeTargets();
 }
 window.addEventListener('resize', resize);
 resize();
@@ -293,14 +342,19 @@ resize();
 // ---------------------------------------------------------------------------
 // Loop
 // ---------------------------------------------------------------------------
-const clock = new THREE.Clock();
+const FIXED_STEP = 1 / 120;
 let simTime = 137.4;
 let elapsed = 0;
+let simAccumulator = 0;
 let wasUnderwater = false;
-const reflectionMatrix = new THREE.Matrix4();
+let frameIndex = 0;
+let reflectionMatrix = new THREE.Matrix4().identity();
+let lastFrameTime = performance.now();
 
 const stats = {
   fps: 60,
+  ms: 16.7,
+  quality: '100%',
   wind: params.windSpeed,
   hs: waveField.hs,
   tp: waveField.peakPeriod,
@@ -317,10 +371,19 @@ const stats = {
 function updateCameraRig(dt) {
   const mode = params.cameraMode;
   const boatPos = boat.group.position;
+  const smoothing = params.cameraSmoothing;
+
+  // o alvo segue o barco, mas o sobe-e-desce das ondas é filtrado:
+  // sem isso a câmera "treme" junto com o casco.
+  const hRate = 1 - Math.exp(-dt * (10.0 * smoothing + 0.001));
+  const vRate = 1 - Math.exp(-dt * (2.6 * smoothing + 0.001));
+  smoothFocus.x += (boatPos.x - smoothFocus.x) * hRate;
+  smoothFocus.z += (boatPos.z - smoothFocus.z) * hRate;
+  smoothFocus.y += (boatPos.y + 1.0 - smoothFocus.y) * vRate;
 
   if (mode === 'Órbita') {
     controls.enabled = true;
-    tmpVec.copy(boatPos).add(upVec);
+    tmpVec.copy(smoothFocus);
     tmpVec2.copy(tmpVec).sub(controls.target);
     camera.position.add(tmpVec2); // a câmera acompanha a deriva do barco
     controls.target.copy(tmpVec);
@@ -331,11 +394,11 @@ function updateCameraRig(dt) {
     tmpVec3.set(1, 0, 0).applyQuaternion(boat.group.quaternion);
     tmpVec3.y = 0;
     tmpVec3.normalize();
-    tmpVec.copy(boatPos)
+    tmpVec.copy(smoothFocus)
       .addScaledVector(tmpVec3, -14.5)
-      .add(tmpVec2.set(0, 4.6, 0));
+      .add(tmpVec2.set(0, 3.6, 0));
     camera.position.lerp(tmpVec, 1 - Math.exp(-dt * 2.0));
-    lookTarget.lerp(tmpVec2.copy(boatPos).add(tmpVec3.set(0, 1.3, 0)), 1 - Math.exp(-dt * 3.4));
+    lookTarget.lerp(tmpVec2.copy(smoothFocus).add(tmpVec3.set(0, 0.3, 0)), 1 - Math.exp(-dt * 3.4));
     camera.lookAt(lookTarget);
   } else {
     controls.enabled = false;
@@ -371,26 +434,51 @@ function renderReflectionPass() {
   renderer.render(scene, reflCam);
 
   ocean.mesh.visible = true;
-  probesDebug.visible = params.showProbes;
   reflectionMatrix.multiplyMatrices(reflCam.projectionMatrix, reflCam.matrixWorldInverse);
 }
 
-function animate() {
+function animate(now) {
   requestAnimationFrame(animate);
 
-  const dtRaw = Math.min(clock.getDelta(), 0.05);
+  const frameStart = now ?? performance.now();
+  const rawMs = frameStart - lastFrameTime;
+  lastFrameTime = frameStart;
+  const dtRaw = Math.min(Math.max(rawMs, 0.0005) / 1000, 0.1);
   elapsed += dtRaw;
-  stats.fps = stats.fps * 0.9 + (1 / Math.max(dtRaw, 1e-4)) * 0.1;
+  frameIndex++;
+
+  // ---------------- governador de quadro ----------------
+  const changed = governor.update(rawMs);
+  if (changed && params.autoQuality) {
+    renderScale = governor.scale;
+    resizeTargets();
+  }
+  stats.fps = governor.fps;
+  stats.ms = governor.ms;
+  stats.quality = governor.label;
 
   const dt = params.paused ? 0 : dtRaw * params.timeScale;
   simTime += dt;
 
-  // ---------------- física ----------------
-  const input = {
-    thrust: (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 0.55 : 0),
-    rudder: (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0),
-  };
-  physics.update(dt, simTime, params, input);
+  // ---------------- física (passo fixo, acumulador) ----------------
+  input.thrust = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 0.55 : 0);
+  input.rudder = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
+  simAccumulator = Math.min(simAccumulator + dt, 0.25);
+  let steps = 0;
+  while (simAccumulator >= FIXED_STEP && steps < 6) {
+    physics.update(FIXED_STEP, simTime, params, input);
+    simAccumulator -= FIXED_STEP;
+    steps++;
+  }
+  if (steps === 0 && dt > 0) physics.readout();
+
+  boat.group.position.copy(physics.position);
+  boat.group.quaternion.copy(physics.quaternion);
+  boatForward.set(1, 0, 0).applyQuaternion(physics.quaternion);
+  boatForward.y = 0;
+  if (boatForward.lengthSq() < 1e-6) boatForward.set(1, 0, 0);
+  boatForward.normalize();
+  boat.updateInterior(dtRaw, atmosphere.daylight);
 
   // ---------------- atmosfera / luz ----------------
   sunLight.color.copy(atmosphere.sunColor);
@@ -410,7 +498,9 @@ function animate() {
     ocean.material.side = underwater ? THREE.DoubleSide : THREE.FrontSide;
   }
 
-  // ---------------- reflexão (antes da água, para usar a matriz do frame) ----
+  // ---------------- reflexão ----------------
+  // Sempre no mesmo quadro (cadência constante = frame time constante). O que
+  // o governador reduz é a RESOLUÇÃO da reflexão, não a frequência.
   sky.update(atmosphere, camera, simTime, waveField.windDir);
   renderReflectionPass();
 
@@ -421,6 +511,9 @@ function animate() {
     atmosphere,
     reflectionTexture: reflRT.texture,
     reflectionMatrix,
+    boatPosition: boat.group.position,
+    boatForward: boatForward,
+    boatSize: boatHalfSize,
     params,
   });
 
@@ -451,16 +544,15 @@ function animate() {
 
   probesDebug.visible = params.showProbes;
   if (loaderEl && !loaderEl.classList.contains('hidden')) {
-    requestAnimationFrame(() => loaderEl.classList.add('hidden'));
+    loaderEl.classList.add('hidden');
   }
 }
 
 // ---------------------------------------------------------------------------
 // Início
 // ---------------------------------------------------------------------------
-// hook de depuração/inspeção (usado pelos scripts de teste)
 if (typeof window !== 'undefined') {
-  window.__oceano = { params, waveField, boat, physics, atmosphere, ocean, camera, renderer };
+  window.__oceano = { params, waveField, boat, physics, atmosphere, ocean, camera, renderer, governor, controls, scene };
 }
 
 atmosphere.update(params.hour, params.cloudCover);
@@ -469,8 +561,24 @@ rebuildEnvironment();
 sky.update(atmosphere, camera, simTime, waveField.windDir);
 
 // resolve o barco já flutuando de forma estável antes do primeiro frame
-for (let i = 0; i < 90; i++) physics.update(1 / 60, simTime + i / 60, params, {});
+for (let i = 0; i < 120; i++) physics.update(1 / 60, simTime + i / 60, params, {});
+boat.group.position.copy(physics.position);
+boat.group.quaternion.copy(physics.quaternion);
 
 camera.lookAt(boatFocus);
 controls.target.copy(boatFocus);
-animate();
+smoothFocus.copy(boatFocus);
+
+// Compila todos os programas antes do primeiro quadro: sem engasgo na
+// primeira interação (o pior travamento é sempre o de compilar shader).
+camera.layers.enableAll();
+try {
+  renderer.compile(scene, camera);
+  renderer.compile(postScene, postCamera);
+} catch (err) {
+  console.warn('pré-compilação de shaders indisponível', err);
+}
+sky.update(atmosphere, camera, simTime, waveField.windDir);
+
+lastFrameTime = performance.now();
+requestAnimationFrame(animate);
