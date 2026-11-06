@@ -1,0 +1,476 @@
+/**
+ * OCEANO 3D — mar espectral em tempo real com física de flutuação.
+ *
+ * Pipeline por frame:
+ *   1. física do barco (sub-passos de 1/120 s) contra o mesmo campo de ondas;
+ *   2. passe de reflexão (câmera espelhada, half-res, HDR);
+ *   3. passe principal em HDR (céu + água + barco);
+ *   4. passe final: exposição, ACES, vinheta e sRGB.
+ */
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+
+import { WaveField } from './waves/WaveField.js';
+import { Ocean } from './ocean/Ocean.js';
+import { Sky } from './sky/Sky.js';
+import { Atmosphere } from './sky/Atmosphere.js';
+import { Boat } from './boat/Boat.js';
+import { BoatPhysics } from './physics/BoatPhysics.js';
+import { createFoamTexture, createRippleNormalTexture } from './util/textures.js';
+import { HUD } from './ui/HUD.js';
+import { createGUI } from './ui/Gui.js';
+import { beaufort, clamp, degToRad } from './util/math.js';
+
+import postVertex from './shaders/post.vert.glsl?raw';
+import postFragment from './shaders/post.frag.glsl?raw';
+
+// ---------------------------------------------------------------------------
+// Parâmetros
+// ---------------------------------------------------------------------------
+const params = {
+  windSpeed: 10.5,
+  windDir: 215,
+  hsScale: 0.9,
+  choppiness: 0.72,
+  timeScale: 1,
+  paused: false,
+
+  foam: 1.0,
+  foamThreshold: 0.88,
+  sss: 1.0,
+  detail: 1.0,
+  roughness: 0.06,
+  sunGlitter: 0.8,
+
+  hour: 16.9,
+  cloudCover: 0.30,
+  exposure: 0.98,
+  vignette: 0.32,
+
+  buoyancy: 1.0,
+  drag: 1.0,
+  keelDrag: 1.0,
+  angularDamping: 1.1,
+  windSail: 1.0,
+  gravityScale: 1.0,
+  showProbes: false,
+
+  cameraMode: 'Órbita',
+  fov: 52,
+};
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({
+  canvas,
+  antialias: false,
+  alpha: false,
+  stencil: false,
+  powerPreference: 'high-performance',
+});
+const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+renderer.setPixelRatio(dpr);
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.setClearColor(0x05080c, 1);
+// O tone mapping é feito no passe final: aqui tudo permanece linear (HDR).
+renderer.toneMapping = THREE.NoToneMapping;
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+
+const canFloat = renderer.extensions.has('EXT_color_buffer_float') ||
+  renderer.extensions.has('EXT_color_buffer_half_float');
+const hdrType = canFloat ? THREE.HalfFloatType : THREE.UnsignedByteType;
+
+const mainRT = new THREE.WebGLRenderTarget(2, 2, {
+  type: hdrType,
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+  depthBuffer: true,
+  stencilBuffer: false,
+  samples: 4,
+});
+
+const reflRT = new THREE.WebGLRenderTarget(2, 2, {
+  type: hdrType,
+  minFilter: THREE.LinearFilter,
+  magFilter: THREE.LinearFilter,
+  depthBuffer: true,
+  stencilBuffer: false,
+});
+
+// ---------------------------------------------------------------------------
+// Cena
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(params.fov, window.innerWidth / window.innerHeight, 0.4, 42000);
+const reflCam = new THREE.PerspectiveCamera(params.fov, window.innerWidth / window.innerHeight, 0.4, 42000);
+
+const atmosphere = new Atmosphere({ hour: params.hour, cloudCover: params.cloudCover });
+const waveField = new WaveField({
+  windSpeed: params.windSpeed,
+  windDirDeg: params.windDir,
+  hsScale: params.hsScale,
+  choppiness: params.choppiness,
+});
+
+const foamTexture = createFoamTexture(256);
+const rippleTexture = createRippleNormalTexture(512);
+const ocean = new Ocean({ waveField, foamTexture, rippleTexture });
+const sky = new Sky({ radius: 21000 });
+
+const boat = new Boat({ renderer });
+const physics = new BoatPhysics({ boat, waveField, heading: 0.62 });
+boat.group.position.copy(physics.position);
+boat.group.quaternion.copy(physics.quaternion);
+
+const probesDebug = boat.createProbeDebug();
+probesDebug.visible = false;
+
+scene.add(sky.mesh);
+scene.add(ocean.mesh);
+scene.add(boat.group);
+
+// luz direta do sol (o resto vem do environment map do céu)
+const sunLight = new THREE.DirectionalLight(0xffffff, 2);
+scene.add(sunLight);
+scene.add(sunLight.target);
+
+// ---------------------------------------------------------------------------
+// Environment map (IBL) a partir do próprio céu
+// ---------------------------------------------------------------------------
+const envScene = new THREE.Scene();
+const envSky = new Sky({ radius: 1200 });
+envScene.add(envSky.mesh);
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileCubemapShader();
+const envDummyCamera = new THREE.PerspectiveCamera();
+let envTarget = null;
+
+function rebuildEnvironment() {
+  envSky.update(atmosphere, envDummyCamera, 0, waveField.windDir);
+  const next = pmrem.fromScene(envScene, 0.02, 1, 5000);
+  if (envTarget) envTarget.dispose();
+  envTarget = next;
+  scene.environment = envTarget.texture;
+}
+
+let envTimer = null;
+function scheduleEnvironment(delay = 140) {
+  clearTimeout(envTimer);
+  envTimer = setTimeout(rebuildEnvironment, delay);
+}
+
+// ---------------------------------------------------------------------------
+// Passe final
+// ---------------------------------------------------------------------------
+const postScene = new THREE.Scene();
+const postCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const postMaterial = new THREE.ShaderMaterial({
+  uniforms: {
+    uScene: { value: null },
+    uExposure: { value: params.exposure },
+    uVignette: { value: params.vignette },
+    uResolution: { value: new THREE.Vector2(1, 1) },
+  },
+  vertexShader: postVertex,
+  fragmentShader: postFragment,
+  depthTest: false,
+  depthWrite: false,
+});
+const postQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMaterial);
+postQuad.frustumCulled = false;
+postScene.add(postQuad);
+
+// ---------------------------------------------------------------------------
+// Câmera
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.075;
+controls.rotateSpeed = 0.55;
+controls.zoomSpeed = 0.9;
+controls.panSpeed = 0.6;
+controls.minDistance = 7;
+controls.maxDistance = 320;
+controls.maxPolarAngle = Math.PI * 0.497;
+controls.enablePan = false;
+
+const boatFocus = new THREE.Vector3().copy(boat.group.position).add(new THREE.Vector3(0, 1.0, 0));
+const sunAzimuth = Math.atan2(atmosphere.sunDir.x, atmosphere.sunDir.z);
+const viewAzimuth = sunAzimuth - degToRad(27);
+const orbitRadius = 21;
+camera.position.set(
+  boat.group.position.x - Math.sin(viewAzimuth) * orbitRadius,
+  3.0,
+  boat.group.position.z - Math.cos(viewAzimuth) * orbitRadius
+);
+camera.lookAt(boatFocus);
+controls.target.copy(boatFocus);
+camera.updateProjectionMatrix();
+
+const lookTarget = boatFocus.clone();
+const tmpVec = new THREE.Vector3();
+const tmpVec2 = new THREE.Vector3();
+const tmpVec3 = new THREE.Vector3();
+const upVec = new THREE.Vector3(0, 1, 0);
+
+// ---------------------------------------------------------------------------
+// Entrada do usuário
+// ---------------------------------------------------------------------------
+const keys = new Set();
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') {
+    params.paused = !params.paused;
+    e.preventDefault();
+    return;
+  }
+  keys.add(e.code);
+});
+window.addEventListener('keyup', (e) => keys.delete(e.code));
+window.addEventListener('blur', () => keys.clear());
+
+// ---------------------------------------------------------------------------
+// HUD + GUI
+// ---------------------------------------------------------------------------
+const hud = new HUD();
+const underwaterEl = document.getElementById('underwater');
+const loaderEl = document.getElementById('loader');
+
+function refreshWaves() {
+  waveField.windSpeed = params.windSpeed;
+  waveField.windDirDeg = params.windDir;
+  waveField.hsScale = params.hsScale;
+  waveField.choppiness = params.choppiness;
+  waveField.rebuild();
+}
+
+const gui = createGUI(params, {
+  onWind: refreshWaves,
+  onReseed: () => {
+    waveField.seed = Math.floor(Math.random() * 1e6);
+    refreshWaves();
+  },
+  onSky: () => {
+    atmosphere.update(params.hour, params.cloudCover);
+    scheduleEnvironment(120);
+  },
+  onResetBoat: () => {
+    physics.reset();
+    physics.setHeading(0.62);
+  },
+  onCameraMode: (mode) => {
+    if (mode === 'Órbita') {
+      controls.target.copy(boat.group.position).add(upVec);
+      controls.enabled = true;
+    }
+  },
+  onFov: () => {
+    camera.fov = params.fov;
+    camera.updateProjectionMatrix();
+  },
+});
+gui.domElement.style.pointerEvents = 'auto';
+
+// ---------------------------------------------------------------------------
+// Render alvo / resize
+// ---------------------------------------------------------------------------
+function resize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  mainRT.setSize(Math.max(2, Math.floor(w * dpr)), Math.max(2, Math.floor(h * dpr)));
+  reflRT.setSize(Math.max(2, Math.floor(w * dpr * 0.5)), Math.max(2, Math.floor(h * dpr * 0.5)));
+  postMaterial.uniforms.uResolution.value.set(w * dpr, h * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------------------------------------------------------------------------
+// Loop
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+let simTime = 137.4;
+let elapsed = 0;
+let wasUnderwater = false;
+const reflectionMatrix = new THREE.Matrix4();
+
+const stats = {
+  fps: 60,
+  wind: params.windSpeed,
+  hs: waveField.hs,
+  tp: waveField.peakPeriod,
+  wave: 0,
+  knots: 0,
+  roll: 0,
+  pitch: 0,
+  draft: 0,
+  hour: params.hour,
+  mass: boat.mass,
+  beaufort: beaufort(params.windSpeed),
+};
+
+function updateCameraRig(dt) {
+  const mode = params.cameraMode;
+  const boatPos = boat.group.position;
+
+  if (mode === 'Órbita') {
+    controls.enabled = true;
+    tmpVec.copy(boatPos).add(upVec);
+    tmpVec2.copy(tmpVec).sub(controls.target);
+    camera.position.add(tmpVec2); // a câmera acompanha a deriva do barco
+    controls.target.copy(tmpVec);
+    controls.update();
+    if (camera.position.y < 0.45) camera.position.y = 0.45;
+  } else if (mode === 'Perseguição') {
+    controls.enabled = false;
+    tmpVec3.set(1, 0, 0).applyQuaternion(boat.group.quaternion);
+    tmpVec3.y = 0;
+    tmpVec3.normalize();
+    tmpVec.copy(boatPos)
+      .addScaledVector(tmpVec3, -14.5)
+      .add(tmpVec2.set(0, 4.6, 0));
+    camera.position.lerp(tmpVec, 1 - Math.exp(-dt * 2.0));
+    lookTarget.lerp(tmpVec2.copy(boatPos).add(tmpVec3.set(0, 1.3, 0)), 1 - Math.exp(-dt * 3.4));
+    camera.lookAt(lookTarget);
+  } else {
+    controls.enabled = false;
+    const t = elapsed;
+    const az = t * 0.11;
+    tmpVec.copy(boatPos).add(
+      tmpVec2.set(-Math.sin(az) * 17.5, 3.6 + Math.sin(t * 0.19) * 1.4, -Math.cos(az) * 17.5)
+    );
+    camera.position.lerp(tmpVec, 1 - Math.exp(-dt * 1.4));
+    lookTarget.lerp(tmpVec2.copy(boatPos).add(tmpVec3.set(0, 1.1, 0)), 1 - Math.exp(-dt * 3.0));
+    camera.lookAt(lookTarget);
+  }
+}
+
+function renderReflectionPass() {
+  const camPos = camera.position;
+  tmpVec.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  const target = tmpVec2.copy(camPos).addScaledVector(tmpVec, 120);
+
+  reflCam.position.set(camPos.x, -camPos.y, camPos.z);
+  const up = tmpVec3.set(0, 1, 0).applyQuaternion(camera.quaternion);
+  reflCam.up.set(up.x, -up.y, up.z);
+  reflCam.lookAt(target.x, -target.y, target.z);
+  reflCam.projectionMatrix.copy(camera.projectionMatrix);
+  reflCam.projectionMatrixInverse.copy(camera.projectionMatrixInverse);
+  reflCam.updateMatrixWorld(true);
+
+  sky.mesh.position.copy(reflCam.position);
+  ocean.mesh.visible = false;
+  probesDebug.visible = false;
+
+  renderer.setRenderTarget(reflRT);
+  renderer.render(scene, reflCam);
+
+  ocean.mesh.visible = true;
+  probesDebug.visible = params.showProbes;
+  reflectionMatrix.multiplyMatrices(reflCam.projectionMatrix, reflCam.matrixWorldInverse);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const dtRaw = Math.min(clock.getDelta(), 0.05);
+  elapsed += dtRaw;
+  stats.fps = stats.fps * 0.9 + (1 / Math.max(dtRaw, 1e-4)) * 0.1;
+
+  const dt = params.paused ? 0 : dtRaw * params.timeScale;
+  simTime += dt;
+
+  // ---------------- física ----------------
+  const input = {
+    thrust: (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 0.55 : 0),
+    rudder: (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0),
+  };
+  physics.update(dt, simTime, params, input);
+
+  // ---------------- atmosfera / luz ----------------
+  sunLight.color.copy(atmosphere.sunColor);
+  sunLight.intensity = atmosphere.sunIntensity * 0.85;
+  sunLight.position.copy(atmosphere.sunDir).multiplyScalar(300);
+  sunLight.target.position.copy(boat.group.position);
+
+  // ---------------- câmera ----------------
+  updateCameraRig(dtRaw);
+
+  // câmera submersa?
+  const surfaceAtCamera = waveField.sampleHeight(camera.position.x, camera.position.z, simTime);
+  const underwater = camera.position.y < surfaceAtCamera;
+  if (underwater !== wasUnderwater) {
+    wasUnderwater = underwater;
+    underwaterEl.classList.toggle('on', underwater);
+    ocean.material.side = underwater ? THREE.DoubleSide : THREE.FrontSide;
+  }
+
+  // ---------------- reflexão (antes da água, para usar a matriz do frame) ----
+  sky.update(atmosphere, camera, simTime, waveField.windDir);
+  renderReflectionPass();
+
+  // ---------------- água ----------------
+  ocean.update({
+    time: simTime,
+    camera,
+    atmosphere,
+    reflectionTexture: reflRT.texture,
+    reflectionMatrix,
+    params,
+  });
+
+  // ---------------- render ----------------
+  sky.mesh.position.copy(camera.position);
+  renderer.setRenderTarget(mainRT);
+  renderer.render(scene, camera);
+
+  postMaterial.uniforms.uScene.value = mainRT.texture;
+  postMaterial.uniforms.uExposure.value = params.exposure;
+  postMaterial.uniforms.uVignette.value = params.vignette;
+  renderer.setRenderTarget(null);
+  renderer.render(postScene, postCamera);
+
+  // ---------------- HUD ----------------
+  stats.wind = waveField.windSpeed;
+  stats.hs = waveField.hs;
+  stats.tp = waveField.peakPeriod;
+  stats.beaufort = beaufort(waveField.windSpeed);
+  stats.wave = physics.waterHeight(simTime);
+  stats.knots = physics.speedKnots;
+  stats.roll = physics.roll;
+  stats.pitch = physics.pitch;
+  stats.draft = physics.draft;
+  stats.hour = params.hour;
+  stats.mass = boat.mass;
+  hud.update(dtRaw, stats);
+
+  probesDebug.visible = params.showProbes;
+  if (loaderEl && !loaderEl.classList.contains('hidden')) {
+    requestAnimationFrame(() => loaderEl.classList.add('hidden'));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Início
+// ---------------------------------------------------------------------------
+// hook de depuração/inspeção (usado pelos scripts de teste)
+if (typeof window !== 'undefined') {
+  window.__oceano = { params, waveField, boat, physics, atmosphere, ocean, camera, renderer };
+}
+
+atmosphere.update(params.hour, params.cloudCover);
+refreshWaves();
+rebuildEnvironment();
+sky.update(atmosphere, camera, simTime, waveField.windDir);
+
+// resolve o barco já flutuando de forma estável antes do primeiro frame
+for (let i = 0; i < 90; i++) physics.update(1 / 60, simTime + i / 60, params, {});
+
+camera.lookAt(boatFocus);
+controls.target.copy(boatFocus);
+animate();
