@@ -70,8 +70,9 @@ const params = {
   cameraSmoothing: 1.0,
 
   autoQuality: true,
+  targetFps: 50,
   resolutionScale: 1.0,
-  reflectionScale: 0.5,
+  reflectionScale: 0.45,
 };
 
 // ---------------------------------------------------------------------------
@@ -274,7 +275,7 @@ function refreshWaves() {
   waveField.rebuild();
 }
 
-const governor = new FrameGovernor({ enabled: params.autoQuality });
+const governor = new FrameGovernor({ enabled: params.autoQuality, targetFps: params.targetFps });
 
 const gui = createGUI(params, {
   onWind: refreshWaves,
@@ -357,7 +358,7 @@ let prevBowHeight = 0;
 let sprayImpact = 0;
 
 const stats = {
-  fps: 60,
+  fps: 50,
   ms: 16.7,
   quality: '100%',
   wind: params.windSpeed,
@@ -457,12 +458,15 @@ function animate(now) {
   frameIndex++;
 
   // ---------------- governador de quadro ----------------
+  // 50 fps é o alvo do projeto: o orçamento é 20 ms, não 16,7 ms.
+  if (governor.targetMs !== 1000 / params.targetFps) governor.setTargetFps(params.targetFps);
   const changed = governor.update(rawMs);
   if (changed && params.autoQuality) {
     renderScale = governor.scale;
     resizeTargets();
   }
   stats.fps = governor.fps;
+  stats.targetFps = params.targetFps;
   stats.ms = governor.ms;
   stats.quality = governor.label;
 

@@ -78,7 +78,9 @@ export function createFoamTexture(size = 512) {
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.generateMipmaps = true;
-  tex.anisotropy = 4;
+  // anisotropia no máximo: a água é vista quase sempre no rasante, e sem isso
+  // o mip apaga a textura exatamente onde ela mais importa
+  tex.anisotropy = 16;
   tex.needsUpdate = true;
   return tex;
 }
@@ -122,7 +124,7 @@ export function createRippleNormalTexture(size = 512, strength = 2.2) {
   tex.magFilter = THREE.LinearFilter;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.generateMipmaps = true;
-  tex.anisotropy = 8;
+  tex.anisotropy = 16;
   tex.needsUpdate = true;
   return tex;
 }

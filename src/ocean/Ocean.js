@@ -8,7 +8,7 @@ import vertexShader from '../shaders/ocean.vert.glsl?raw';
 import fragmentShader from '../shaders/ocean.frag.glsl?raw';
 import { SWELL_COUNT, DETAIL_COUNT } from '../waves/WaveField.js';
 
-function buildPolarGrid(rings = 210, segments = 256, r0 = 0.5, rMax = 26000) {
+function buildPolarGrid(rings = 250, segments = 256, r0 = 0.5, rMax = 16000) {
   const verts = rings + 1;
   const segs = segments + 1;
   const positions = new Float32Array(verts * segs * 3);

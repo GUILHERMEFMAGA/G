@@ -5,17 +5,18 @@
  * devicePixelRatio alto e reflexão planar, a GPU pode levar 30 ms num frame e
  * 8 ms no seguinte. Em vez de travar em "qualidade máxima" (engasgos) ou
  * "qualidade mínima" (imagem mole), a resolução é ajustada em degraus para
- * manter o gasto por frame dentro do orçamento de 60 Hz.
+ * manter o gasto por frame dentro do orçamento pedido (padrão 50 fps = 20 ms,
+ * que é o alvo do projeto; 60 Hz só sobrava margem para engasgo).
  *
  * Tudo é histerese + cooldown: só muda de degrau quando a mediana de uma janela
  * inteira de frames passa (ou fica bem abaixo) do alvo. Isso evita o efeito
  * "bomba" de subir e descer de resolução a cada frame.
  */
 
-const SCALES = [1.0, 0.9, 0.8, 0.7, 0.62, 0.55];
+const SCALES = [1.0, 0.9, 0.8, 0.7, 0.62, 0.55, 0.47];
 
 export class FrameGovernor {
-  constructor({ targetFps = 60, enabled = true, scale = 1.0, windowMs = 420 } = {}) {
+  constructor({ targetFps = 50, enabled = true, scale = 1.0, windowMs = 420 } = {}) {
     this.targetMs = 1000 / targetFps;
     this.enabled = enabled;
     this.manualScale = scale;
@@ -34,15 +35,20 @@ export class FrameGovernor {
     this._slowStreak = 0;
     this._fastStreak = 0;
 
-    this.ms = 16.7;
-    this.p95 = 16.7;
-    this.fps = 60;
+    this.ms = this.targetMs;
+    this.p95 = this.targetMs;
+    this.fps = targetFps;
     this.changed = false;
 
     // Cadência constante (todo quadro) com resolução variável: alternar entre
     // "com/sem reflexão" faz o custo do quadro oscilar em dobro, e o olho lê
     // isso como travamento. Resolução menor todo quadro é lisa.
-    this.reflectionScale = 0.5;
+    this.reflectionScale = 0.45;
+  }
+
+  setTargetFps(fps) {
+    if (!(fps > 1)) return;
+    this.targetMs = 1000 / fps;
   }
 
   setEnabled(v) {
@@ -50,7 +56,7 @@ export class FrameGovernor {
     if (!v) {
       this.scaleIndex = 0;
       this.scale = this.manualScale;
-      this.reflectionScale = 0.5;
+      this.reflectionScale = 0.45;
       this.changed = true;
     }
   }
@@ -140,7 +146,7 @@ export class FrameGovernor {
   _apply() {
     this.scale = SCALES[this.scaleIndex];
     // abaixo de 0.85 a reflexão também cai de resolução (0.5 -> 0.34)
-    this.reflectionScale = this.scale >= 0.85 ? 0.5 : 0.34;
+    this.reflectionScale = this.scale >= 0.85 ? 0.45 : 0.30;
     this._slowStreak = 0;
     this._fastStreak = 0;
     this._cooldown = 900;
