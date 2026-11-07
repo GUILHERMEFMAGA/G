@@ -19,6 +19,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 import { WaveField } from './waves/WaveField.js';
 import { Ocean } from './ocean/Ocean.js';
+import { Spray } from './ocean/Spray.js';
 import { Sky } from './sky/Sky.js';
 import { Atmosphere } from './sky/Atmosphere.js';
 import { Boat } from './boat/Boat.js';
@@ -51,9 +52,9 @@ const params = {
   sunGlitter: 0.8,
   hullShadow: 1.0,
 
-  hour: 16.9,
+  hour: 14.2,
   cloudCover: 0.30,
-  exposure: 0.98,
+  exposure: 1.12,
   vignette: 0.32,
 
   buoyancy: 1.0,
@@ -137,6 +138,8 @@ const foamTexture = createFoamTexture(256);
 const rippleTexture = createRippleNormalTexture(512);
 const ocean = new Ocean({ waveField, foamTexture, rippleTexture });
 const sky = new Sky({ radius: 21000 });
+const spray = new Spray({ count: 2800 });
+scene.add(spray.points);
 
 const boat = new Boat({ renderer });
 const physics = new BoatPhysics({ boat, waveField, heading: 0.62 });
@@ -350,6 +353,8 @@ let wasUnderwater = false;
 let frameIndex = 0;
 let reflectionMatrix = new THREE.Matrix4().identity();
 let lastFrameTime = performance.now();
+let prevBowHeight = 0;
+let sprayImpact = 0;
 
 const stats = {
   fps: 60,
@@ -429,11 +434,15 @@ function renderReflectionPass() {
   sky.mesh.position.copy(reflCam.position);
   ocean.mesh.visible = false;
   probesDebug.visible = false;
+  const sprayWasVisible = spray.points.visible;
+  spray.points.visible = false;
 
   renderer.setRenderTarget(reflRT);
   renderer.render(scene, reflCam);
 
   ocean.mesh.visible = true;
+  // o respingo volta a aparecer depois do passe espelhado
+  spray.points.visible = sprayWasVisible;
   reflectionMatrix.multiplyMatrices(reflCam.projectionMatrix, reflCam.matrixWorldInverse);
 }
 
@@ -479,6 +488,31 @@ function animate(now) {
   if (boatForward.lengthSq() < 1e-6) boatForward.set(1, 0, 0);
   boatForward.normalize();
   boat.updateInterior(dtRaw, atmosphere.daylight);
+  boat.updateMechanics(dtRaw, input.rudder, physics.velocity.length());
+
+  // ---------------- respingo da proa (partículas na GPU) ----------------
+  const bowX = boat.group.position.x + boatForward.x * boat.length * 0.5;
+  const bowZ = boat.group.position.z + boatForward.z * boat.length * 0.5;
+  const bowHeight = waveField.sampleHeight(bowX, bowZ, simTime);
+  if (dtRaw > 0) {
+    const waterRate = (bowHeight - prevBowHeight) / dtRaw;
+    prevBowHeight = bowHeight;
+    // quanto a água "sobe" em relação ao casco: é isso que arremessa o spray
+    const relRate = waterRate - physics.velocity.y;
+    const targetImpact = clamp(relRate / 2.2, 0, 1);
+    sprayImpact += (targetImpact - sprayImpact) * Math.min(1, dtRaw * 7);
+  }
+  spray.update({
+    boatPosition: boat.group.position,
+    boatQuaternion: physics.quaternion,
+    halfLength: boat.length * 0.5,
+    speed: physics.velocity.length(),
+    impact: sprayImpact,
+    time: simTime,
+    camera,
+    light: atmosphere.horizon,
+    pixelHeight: renderer.domElement.height,
+  });
 
   // ---------------- atmosfera / luz ----------------
   sunLight.color.copy(atmosphere.sunColor);

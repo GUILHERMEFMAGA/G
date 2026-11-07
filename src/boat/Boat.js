@@ -270,6 +270,16 @@ export class Boat {
     });
 
     this.lampMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.0, 0.82, 0.56).multiplyScalar(1.35) });
+    this.screenMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.22, 0.72, 0.95) });
+
+    // madeira envernizada do cockpit (mais brilho que a teca crua do convés)
+    this.varnishMaterial = new THREE.MeshStandardMaterial({
+      map: this.materials.teak,
+      color: 0xcdb79c,
+      roughness: 0.26,
+      metalness: 0.05,
+      envMapIntensity: 0.9,
+    });
   }
 
   /** Funde uma lista de geometrias num único mesh. */
@@ -544,6 +554,8 @@ export class Boat {
     const fabric = [];
     const dark = [];
     const lamps = [];
+    const metalInterior = [];
+    const screens = [];
 
     const floorY = 0.05;
     // piso
@@ -571,6 +583,14 @@ export class Boat {
     // anteparo de proa (fundo da cabine)
     wood.push(box(0.05, 0.70, 1.34, 0.80, floorY + 0.36, 0));
 
+    // casa de máquinas: motor visível pela escotilha de entrada
+    dark.push(box(0.62, 0.34, 0.62, -2.05, floorY + 0.17, 0));
+    dark.push(cyl(0.10, 0.10, 0.30, -2.05, floorY + 0.36, -0.14, 0, 0, 0, 10));
+    metalInterior.push(cyl(0.03, 0.03, 0.55, -2.05, floorY + 0.20, 0.20, 0, 0, Math.PI / 2, 8));
+
+    // painel de instrumentos (tela emissiva) no anteparo de proa
+    screens.push(box(0.012, 0.16, 0.24, 0.775, floorY + 0.52, 0.22));
+
     // luzes do teto (emissivas)
     for (const x of [-1.55, -0.55, 0.35]) {
       lamps.push(box(0.42, 0.014, 0.16, x, c.top - 0.06, 0));
@@ -580,7 +600,9 @@ export class Boat {
     wood.push(box(3.20, 0.02, 1.28, -0.66, c.top - 0.03, 0));
     this.addMerged(wood, this.woodMaterial, { name: 'interior-madeira' });
     this.addMerged(fabric, this.fabricMaterial, { name: 'interior-almofadas' });
-    this.addMerged(dark, this.darkMaterial, { name: 'interior-ferragens' });
+    this.addMerged(dark, this.darkMaterial, { name: 'interior-maquinas' });
+    this.addMerged(metalInterior, this.metalMaterial, { name: 'interior-tubos' });
+    this.addMerged(screens, this.screenMaterial, { name: 'interior-painel' });
     this.addMerged(lamps, this.lampMaterial, { name: 'interior-luzes' });
 
     // luz quente da cabine: aparece pelas janelas ao entardecer
@@ -623,19 +645,54 @@ export class Boat {
     wood.push(box(0.24, 0.26, zc * 1.8, x0 + 0.16, sole + 0.15, 0));
     fabric.push(box(0.22, 0.09, zc * 1.75, x0 + 0.16, sole + 0.32, 0));
 
-    // pedestal + roda do leme
-    const wheelX = -2.62;
-    const wheelY = 0.50;
-    metal.push(cyl(0.06, 0.095, 0.78, wheelX, 0.11, 0, 0, 0, 0, 12));
-    dark.push(place(new THREE.TorusGeometry(0.30, 0.021, 8, 28), wheelX, wheelY, 0, 0, Math.PI / 2, 0));
-    for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2;
-      metal.push(box(0.012, 0.30, 0.014, wheelX, wheelY + Math.cos(a) * 0.15, Math.sin(a) * 0.15, a, 0, 0));
-    }
-    dark.push(cyl(0.05, 0.05, 0.08, wheelX, wheelY, 0, 0, Math.PI / 2, 0, 10));
+    // ---- coluna do leme no MEIO do cockpit (não colada no casario) ----
+    const wheelX = -3.02;
+    const wheelY = 0.66;
+    const soleY = k.sole;
+
+    // pedestal cônico + base
+    metal.push(cyl(0.075, 0.11, wheelY - soleY - 0.10, wheelX, (wheelY + soleY) / 2 - 0.02, 0, 0, 0, 0, 14));
+    metal.push(cyl(0.20, 0.24, 0.05, wheelX, soleY + 0.03, 0, 0, 0, 0, 16));
+    // mesa do pedestal (onde vão instrumentos)
+    dark.push(box(0.30, 0.06, 0.42, wheelX, wheelY - 0.12, 0, 0, 0, 0));
+    // compasso
+    metal.push(place(new THREE.SphereGeometry(0.048, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), wheelX, wheelY + 0.05, 0));
+    // manete do acelerador no pedestal
+    dark.push(cyl(0.016, 0.020, 0.22, wheelX + 0.16, wheelY - 0.06, 0.12, 0, 0, -0.5, 8));
 
     this.addMerged(shell, this.cabinMaterial, { name: 'cockpit-poco' });
-    this.addMerged(wood, this.woodMaterial, { name: 'cockpit-madeira' });
+
+    // ---- roda do leme separada: gira junto com o leme ----
+    const wheelGroup = new THREE.Group();
+    wheelGroup.position.set(wheelX, wheelY, 0);
+    const rimMat = new THREE.MeshStandardMaterial({ color: 0x2b2f33, roughness: 0.45, metalness: 0.55 });
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.30, 0.022, 10, 40), rimMat);
+    rim.rotation.y = Math.PI / 2;
+    wheelGroup.add(rim);
+    const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.09, 12), this.metalMaterial);
+    hub.rotation.z = Math.PI / 2;
+    wheelGroup.add(hub);
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2;
+      const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.29, 0.016), this.metalMaterial);
+      spoke.position.set(0, Math.cos(a) * 0.148, Math.sin(a) * 0.148);
+      spoke.rotation.x = a;
+      wheelGroup.add(spoke);
+    }
+    // manivelas do leme (as "manivelas" de verdade, no aro)
+    for (const a of [0.4, 2.5, 4.4]) {
+      const knob = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.10, 8), rimMat);
+      knob.position.set(0, Math.cos(a) * 0.30, Math.sin(a) * 0.30);
+      knob.rotation.x = a + Math.PI / 2;
+      wheelGroup.add(knob);
+    }
+    wheelGroup.name = 'roda-do-leme';
+    this.model.add(wheelGroup);
+    this.wheel = wheelGroup;
+    this.wheelAngle = 0;
+
+    this.addMerged(shell, this.cabinMaterial, { name: 'cockpit-poco' });
+    this.addMerged(wood, this.varnishMaterial, { name: 'cockpit-madeira' });
     this.addMerged(fabric, this.fabricMaterial, { name: 'cockpit-almofadas' });
     this.addMerged(metal, this.metalMaterial, { name: 'cockpit-metal' });
     this.addMerged(dark, this.darkMaterial, { name: 'cockpit-leme' });
@@ -841,6 +898,24 @@ export class Boat {
       trim.push(tube([[-2.05, 0.88, side * 0.62], [-0.9, 0.90, side * 0.66], [0.35, 0.88, side * 0.62]], 0.016, 12, 6));
     }
 
+    // catracas (winches) com manivela, onde o cockpit encontra o casario
+    this.winches = [];
+    for (const side of [-1, 1]) {
+      const wx = -2.52;
+      const wz = side * 0.64;
+      const base = this.deckY(wx / 4.2) + 0.02;
+      metal.push(cyl(0.085, 0.10, 0.02, wx, base + 0.01, wz, 0, 0, 0, 14));
+      const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.062, 0.075, 0.13, 14), this.metalMaterial);
+      drum.position.set(wx, base + 0.09, wz);
+      this.model.add(drum);
+      // manivela
+      const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.26, 8), this.metalMaterial);
+      handle.position.set(wx + 0.10, base + 0.14, wz);
+      handle.rotation.z = Math.PI / 2 - 0.5;
+      this.model.add(handle);
+      this.winches.push({ drum, base: 0 });
+    }
+
     this.addMerged(metal, this.metalMaterial, { name: 'ferragens' });
     this.addMerged(dark, this.darkMaterial, { name: 'quilha' });
     this.addMerged(trim, this.trimMaterial, { name: 'corrimao' });
@@ -924,6 +999,24 @@ export class Boat {
     }
     this.group.add(group);
     return group;
+  }
+
+  /**
+   * Mecânica visível: o volante gira com o leme e as catracas giram quando há
+   * regulagem de vela. É o que mostra "por dentro" que o barco está vivo.
+   */
+  updateMechanics(dt, rudder = 0, speed = 0) {
+    if (this.wheel) {
+      const target = this.wheelAngle + rudder * dt * 3.2;
+      this.wheelAngle += (target - this.wheelAngle) * Math.min(1, dt * 6);
+      this.wheel.rotation.x = this.wheelAngle;
+    }
+    if (this.winches) {
+      for (let i = 0; i < this.winches.length; i++) {
+        const w = this.winches[i];
+        w.drum.rotation.y += dt * (0.35 + 0.5 * Math.abs(rudder)) * (i % 2 === 0 ? 1 : -1);
+      }
+    }
   }
 
   /** Ajusta a luz interna conforme a hora do dia (a cabine acende ao anoitecer). */

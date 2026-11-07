@@ -50,7 +50,7 @@ void main() {
   float y = dir.y;
 
   // gradiente base do céu
-  float up = pow(clamp(y, 0.0, 1.0), 0.30);
+  float up = pow(clamp(y, 0.0, 1.0), 0.48);
   vec3 col = mix(uHorizonColor, uZenithColor, up);
 
   // banda quente de nascer/pôr do sol (dependente do azimute)
@@ -91,8 +91,15 @@ void main() {
     col += vec3(0.85, 0.92, 1.0) * star * uNightFactor * 1.4;
   }
 
+  // Abaixo do horizonte o céu não existe: no reflexo (e em qualquer ângulo
+  // rasante) o que aparece é o próprio mar. Sem isso, o reflexo da metade
+  // inferior da esfera de céu lavava a água com uma chapa azul-clara.
+  float below = smoothstep(0.004, -0.020, y);
+  vec3 seaFar = mix(uHorizonColor * 0.42, uZenithColor * 0.55, 0.35);
+  col = mix(col, seaFar, below);
+
   // haze junto ao horizonte
-  col = mix(col, uHorizonColor * 1.02, exp(-max(y, 0.0) * 34.0) * 0.5);
+  col = mix(col, uHorizonColor * 1.02, exp(-max(y, 0.0) * 26.0) * 0.34);
 
   gl_FragColor = vec4(max(col, vec3(0.0)), 1.0);
 }

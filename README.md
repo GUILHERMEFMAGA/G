@@ -85,12 +85,31 @@ gelcoat procedural, obra-viva, faixa e borda — nada de modelo importado.
 - **interior mobiliado**: piso, beliches com almofadas de tecido, mesa, cozinha,
   anteparo e luminárias emissivas + uma luz pontual quente — à noite a cabine
   acende e a luz aparece pelas janelas;
-- cockpit rebaixado (o poço é recortado na grade do convés), bancos, roda do leme,
-  grade de proteção, púlpitos, gaiutas, catracas e luzes de navegação;
+- **casa de máquinas e painel**: motor visível pela escotilha, tubulação e um
+  painel de instrumentos com tela emissiva — dá para ver que o barco funciona;
+- **comando no lugar certo**: a roda do leme fica no **pedestal no meio do
+  cockpit**, com compasso, mesa de instrumentos e manete — e **gira junto com o
+  leme** (a posição vem da física), com as manivelas do aro acompanhando;
+- cockpit rebaixado (o poço é recortado na grade do convés), bancos, grade de
+  proteção, púlpitos, gaiutas, luzes de navegação e **catracas com manivela**
+  que giram; madeira do cockpit envernizada (mais brilho que a teca do convés);
 - ~29 malhas no total: as peças pequenas são **fundidas por material**
   (`mergeGeometries`), então o barco inteiro custa ~13 draw calls por material.
 
-### 4. Renderização
+### 4. Respingo da proa
+
+O barco joga água de verdade: 2 800 gotas em **um único draw call**, com
+geometria "sem estado" — cada vértice sabe só a semente dele (direção, fase,
+tamanho, vida) e o **vertex shader resolve o lançamento balístico com arrasto
+do ar** a partir do tempo. Nenhuma partícula é atualizada na CPU, então o custo
+é o mesmo a 30 ou 144 Hz.
+
+A emissão é física, não um efeito ligado/desligado: a física entrega a cada
+quadro a velocidade do casco e o **quanto a proa está enterrando em relação à
+água** (derivada da altura da onda na proa menos a velocidade vertical do
+barco). É isso que arremessa o borrifo mais longe quando o barco bate na onda.
+
+### 5. Renderização
 
 Pipeline por frame (tudo em HDR linear, tone mapping só no fim):
 
@@ -119,7 +138,7 @@ importa.
 
 ---
 
-### 5. Desempenho (engenharia, não sorte)
+### 6. Desempenho (engenharia, não sorte)
 
 O app é feito para não travar em máquina nenhuma:
 

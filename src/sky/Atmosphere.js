@@ -13,12 +13,12 @@ import { clamp, smoothstep, degToRad } from '../util/math.js';
 const C = (r, g, b) => new THREE.Color(r, g, b);
 
 const NIGHT_ZENITH = C(0.004, 0.007, 0.020);
-const DAY_ZENITH = C(0.042, 0.155, 0.470);
-const DUSK_ZENITH = C(0.055, 0.090, 0.265);
+const DAY_ZENITH = C(0.045, 0.160, 0.485);
+const DUSK_ZENITH = C(0.040, 0.072, 0.220);
 
 const NIGHT_HORIZON = C(0.010, 0.016, 0.038);
-const DAY_HORIZON = C(0.480, 0.640, 0.880);
-const DUSK_HORIZON = C(0.330, 0.400, 0.610);
+const DAY_HORIZON = C(0.310, 0.455, 0.760);
+const DUSK_HORIZON = C(0.280, 0.330, 0.520);
 
 const SUN_LOW = C(1.0, 0.36, 0.12);
 const SUN_HIGH = C(1.0, 0.955, 0.890);
