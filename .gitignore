@@ -7,3 +7,5 @@ dist/
 # capturas de diagnóstico
 *.tmp.mjs
 final_*.png
+top_*.png
+dbg*.png
