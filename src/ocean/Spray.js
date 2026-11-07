@@ -61,7 +61,7 @@ const vertexShader = /* glsl */ `
 
     vec4 mv = viewMatrix * vec4(pos, 1.0);
     float dist = max(-mv.z, 0.5);
-    gl_PointSize = clamp((0.010 + 0.042 * aSeed.z) * uPointScale / dist, 1.0, 9.0);
+    gl_PointSize = clamp((0.004 + 0.035 * aSeed.z * aSeed.z) * uPointScale / dist, 1.0, 7.0);
     vShade = 0.72 + 0.5 * clamp(uLight.r, 0.0, 1.0);
 
     gl_Position = projectionMatrix * mv;

@@ -3,3 +3,7 @@ dist/
 .DS_Store
 *.log
 .vite/
+
+# capturas de diagnóstico
+*.tmp.mjs
+final_*.png

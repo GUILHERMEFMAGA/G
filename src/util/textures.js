@@ -55,14 +55,21 @@ export function createFoamTexture(size = 512) {
     for (let x = 0; x < size; x++) {
       const u = x / size;
       const v = y / size;
-      const n1 = fbmTileable(u, v, 4, 5, 101);
-      const n2 = fbmTileable(u, v, 3, 6, 777);
-      const ridged = 1 - Math.abs(fbmTileable(u, v, 5, 4, 313) * 2 - 1);
+
+      // R: bolhas finas (espuma fresca, recém-formada)
+      const fine = fbmTileable(u, v, 26, 4, 101);
+      // G: malha média (a "renda" da crista quebrando)
+      const mid = fbmTileable(u, v, 13, 5, 777);
+      // B: estrutura grande, em cristas (ridged) — desenha as linhas de espuma
+      const ridged = 1 - Math.abs(fbmTileable(u, v, 7, 5, 313) * 2 - 1);
+      // A: pontilhado de micro-bolhas (o "salpicado" branco)
+      const speckle = fbmTileable(u, v, 46, 3, 9001);
+
       const i = (y * size + x) * 4;
-      data[i] = Math.round(n1 * 255);
-      data[i + 1] = Math.round(n2 * 255);
+      data[i] = Math.round(fine * 255);
+      data[i + 1] = Math.round(mid * 255);
       data[i + 2] = Math.round(ridged * 255);
-      data[i + 3] = 255;
+      data[i + 3] = Math.round(speckle * 255);
     }
   }
   const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
@@ -85,8 +92,9 @@ export function createRippleNormalTexture(size = 512, strength = 2.2) {
       const v = y / size;
       // duas escalas para evitar padrão repetitivo
       height[y * size + x] =
-        fbmTileable(u, v, 8, 5, 4111) * 0.65 +
-        fbmTileable(u, v, 17, 4, 907) * 0.35;
+        fbmTileable(u, v, 12, 5, 4111) * 0.55 +
+        fbmTileable(u, v, 29, 4, 907) * 0.30 +
+        fbmTileable(u, v, 58, 3, 3313) * 0.15;
     }
   }
 
@@ -215,25 +223,25 @@ export function createTeakTexture(renderer = null, size = 1024) {
   const ctx = canvas.getContext('2d');
   const rand = mulberryLike(1337);
 
-  ctx.fillStyle = '#a8804e';
+  ctx.fillStyle = '#9c7c56';
   ctx.fillRect(0, 0, size, size);
 
-  const planks = 14;
+  const planks = 26;
   const ph = size / planks;
   for (let p = 0; p < planks; p++) {
     const y0 = p * ph;
-    const tone = 0.84 + rand() * 0.26;
-    const r = Math.round(176 * tone);
-    const g = Math.round(133 * tone);
-    const b = Math.round(86 * tone);
+    const tone = 0.76 + rand() * 0.38;
+    const r = Math.round(172 * tone);
+    const g = Math.round(140 * tone);
+    const b = Math.round(102 * tone);
     ctx.fillStyle = `rgb(${r},${g},${b})`;
     ctx.fillRect(0, y0, size, ph);
 
     // veio do veio: linhas longas e finas
-    for (let k = 0; k < 34; k++) {
+    for (let k = 0; k < 52; k++) {
       const gy = y0 + rand() * ph;
-      ctx.strokeStyle = `rgba(84, 56, 30, ${0.03 + rand() * 0.10})`;
-      ctx.lineWidth = 0.5 + rand() * 1.6;
+      ctx.strokeStyle = `rgba(74, 50, 28, ${0.05 + rand() * 0.22})`;
+      ctx.lineWidth = 0.4 + rand() * 1.5;
       ctx.beginPath();
       const phase = rand() * 10;
       for (let x = 0; x <= size; x += 28) {
@@ -257,8 +265,26 @@ export function createTeakTexture(renderer = null, size = 1024) {
     // calafeto
     ctx.fillStyle = 'rgba(22, 15, 9, 0.92)';
     ctx.fillRect(0, y0 + ph - 2.5, size, 2.5);
-    ctx.fillStyle = 'rgba(255, 235, 210, 0.06)';
-    ctx.fillRect(0, y0, size, 1.5);
+    const bevel = ctx.createLinearGradient(0, y0, 0, y0 + ph);
+    bevel.addColorStop(0, 'rgba(255, 240, 220, 0.16)');
+    bevel.addColorStop(0.12, 'rgba(255, 240, 220, 0.0)');
+    bevel.addColorStop(0.86, 'rgba(40, 26, 14, 0.0)');
+    bevel.addColorStop(1, 'rgba(40, 26, 14, 0.22)');
+    ctx.fillStyle = bevel;
+    ctx.fillRect(0, y0, size, ph);
+  }
+
+  // fibras curtas cruzadas: quebra a uniformidade do veio
+  for (let i = 0; i < 2600; i++) {
+    const cx = rand() * size;
+    const cy = rand() * size;
+    const len = 4 + rand() * 16;
+    ctx.strokeStyle = `rgba(${rand() > 0.5 ? '250, 236, 214' : '58, 40, 22'}, ${0.02 + rand() * 0.05})`;
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + len, cy + (rand() - 0.5) * 1.6);
+    ctx.stroke();
   }
 
   // manchas de sal / água seca
@@ -294,8 +320,12 @@ export function createGelcoatTexture(size = 512) {
     for (let x = 0; x < size; x++) {
       const u = x / size;
       const v = y / size;
-      const n = fbmTileable(u, v, 6, 4, 21) * 0.6 + fbmTileable(u, v, 24, 3, 55) * 0.4;
-      const shade = 236 + Math.round((n - 0.5) * 26);
+      const n = fbmTileable(u, v, 6, 4, 21) * 0.55 + fbmTileable(u, v, 24, 3, 55) * 0.45;
+      // escorridos verticais (a água que escorre do convés mancha o casco)
+      const run = fbmTileable(u, v * 0.18 + 0.37, 9, 3, 611);
+      const streak = Math.pow(Math.max(0, run - 0.45) / 0.55, 1.6);
+      const dirt = streak * 0.55 + Math.pow(Math.max(0, n - 0.52), 1.3) * 0.9;
+      const shade = 238 + Math.round((n - 0.5) * 22 - dirt * 34);
       const i = (y * size + x) * 4;
       data[i] = Math.min(255, shade + 2);
       data[i + 1] = Math.min(255, shade + 3);

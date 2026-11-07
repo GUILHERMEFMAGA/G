@@ -39,8 +39,8 @@ import postFragment from './shaders/post.frag.glsl?raw';
 const params = {
   windSpeed: 10.5,
   windDir: 215,
-  hsScale: 0.9,
-  choppiness: 0.72,
+  hsScale: 0.95,
+  choppiness: 0.80,
   timeScale: 1,
   paused: false,
 
@@ -134,7 +134,7 @@ const waveField = new WaveField({
   choppiness: params.choppiness,
 });
 
-const foamTexture = createFoamTexture(256);
+const foamTexture = createFoamTexture(512);
 const rippleTexture = createRippleNormalTexture(512);
 const ocean = new Ocean({ waveField, foamTexture, rippleTexture });
 const sky = new Sky({ radius: 21000 });

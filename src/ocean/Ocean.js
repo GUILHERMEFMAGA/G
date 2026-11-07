@@ -66,7 +66,7 @@ export class Ocean {
       uZenithColor: { value: new THREE.Color() },
       uHorizonColor: { value: new THREE.Color() },
 
-      uDeepColor: { value: new THREE.Color(0.0034, 0.019, 0.050) },
+      uDeepColor: { value: new THREE.Color(0.0105, 0.056, 0.108) },
       uShallowColor: { value: new THREE.Color(0.014, 0.076, 0.108) },
       uSssColor: { value: new THREE.Color(0.035, 0.33, 0.29) },
       uFoamColor: { value: new THREE.Color(0.80, 0.88, 0.93) },
@@ -151,8 +151,8 @@ export class Ocean {
     if (reflectionMatrix) u.uReflectionMatrix.value.copy(reflectionMatrix);
 
     // cores de corpo da água acompanham a luz do dia
-    u.uDeepColor.value.setRGB(0.0034, 0.019, 0.050).multiplyScalar(daylight);
-    u.uShallowColor.value.setRGB(0.014, 0.076, 0.108).multiplyScalar(daylight);
+    u.uDeepColor.value.setRGB(0.0105, 0.056, 0.108).multiplyScalar(daylight);
+    u.uShallowColor.value.setRGB(0.030, 0.135, 0.150).multiplyScalar(daylight);
     u.uSssColor.value.setRGB(0.035, 0.33, 0.29).multiplyScalar(daylight);
 
     if (params) {

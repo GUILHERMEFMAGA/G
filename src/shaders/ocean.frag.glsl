@@ -80,10 +80,16 @@ void main() {
     float th = A.x * vBaseXZ.x + A.y * vBaseXZ.y - A.z * uTime + A.w;
     slope += vec2(B.z * A.x, B.z * A.y) * cos(th);
   }
-  // ondulações de alta frequência vindas de um mapa de normais (duas escalas)
-  vec2 rd1 = texture2D(uRippleTex, vWorldPos.xz * 0.135 + vec2(uTime * 0.006, uTime * 0.004)).xy * 2.0 - 1.0;
-  vec2 rd2 = texture2D(uRippleTex, vWorldPos.xz * 0.042 - vec2(uTime * 0.003, uTime * 0.0022)).xy * 2.0 - 1.0;
-  vec2 ripple = rd1 * 0.65 + rd2 * 0.9;
+  // Ondulações finas. A UV é girada para o referencial do VENTO e esticada
+  // ao longo dele: onda de vento é alongada na direção em que sopra, não é
+  // ruído redondo. Depois a inclinação volta para o mundo.
+  vec2 crossWind = vec2(-uWindDir.y, uWindDir.x);
+  vec2 wWarp = vec2(dot(vWorldPos.xz, uWindDir), dot(vWorldPos.xz, crossWind));
+  float drift = uTime * 0.35;
+  vec2 rd1 = texture2D(uRippleTex, wWarp * vec2(0.055, 0.145) + vec2(-drift * 0.004, drift * 0.010)).xy * 2.0 - 1.0;
+  vec2 rd2 = texture2D(uRippleTex, wWarp * vec2(0.018, 0.048) - vec2(drift * 0.002, drift * 0.004)).xy * 2.0 - 1.0;
+  vec2 ripW = rd1 * 0.65 + rd2 * 0.95;
+  vec2 ripple = uWindDir * ripW.x + crossWind * ripW.y;
 
   // Atenuação por distância: as ondulações menores que um pixel não devem
   // perturbar o Fresnel rasante — senão o mar distante deixa de espelhar o céu.
@@ -102,16 +108,24 @@ void main() {
   // inclinadas refletem MENOS no rasante — é por isso que o mar real fica mais
   // escuro que o céu no horizonte em vez de virar um espelho leitoso.
   float fres = clamp(0.02 + 0.98 * pow(1.0 - ndv, 5.0), 0.0, 1.0);
-  float microTilt = clamp(length(slope) * 1.6, 0.0, 0.42) + clamp(dist * 0.00002, 0.0, 0.22);
-  float fresR = fres * mix(1.0, 0.58, microTilt);
+  float microTilt = clamp(length(slope) * 2.2, 0.0, 0.48) + clamp(dist * 0.00002, 0.0, 0.24);
+  float fresR = fres * mix(1.0, 0.42, microTilt);
 
   float hNorm = clamp(vHeight / max(uMaxAmp, 1e-3), -1.0, 1.0);
   float crest = clamp(hNorm * 0.5 + 0.5, 0.0, 1.0);
 
   // ---------------- corpo da água ----------------
-  vec3 body = mix(uDeepColor, uShallowColor, crest * 0.55);
+  // manchas de profundidade: água rasa sobre bancos, mais clara e esverdeada
+  float depthVar = texture2D(uFoamTex, vWorldPos.xz * 0.0035 + vec2(uTime * 0.0004)).b;
+  float turbidity = smoothstep(0.42, 0.85, depthVar) * 0.55;
+  vec3 body = mix(uDeepColor, uShallowColor, clamp(crest * 0.55 + turbidity, 0.0, 1.0));
+  // relevo: encostas voltadas ao sol pegam mais luz, encostas afastadas escurecem
+  vec3 sunH = normalize(vec3(uSunDir.x, 0.0, uSunDir.z) + vec3(1e-4, 0.0, 0.0));
+  vec3 nH = normalize(vec3(N.x, 0.0, N.z) + vec3(1e-4, 0.0, 0.0));
+  body *= 1.0 + 0.13 * dot(nH, sunH);
   vec3 skyAmbient = mix(uHorizonColor, uZenithColor, 0.55);
-  body += skyAmbient * (0.085 + 0.075 * N.y);
+  // luz do céu espalhada: pequena, senão ela engole a cor do corpo d'água
+  body += skyAmbient * (0.032 + 0.038 * N.y);
   // micro-sombreamento: onde a superfície se comprime (Jacobiano baixo) o vale
   // fica mais escuro — é isso que dá "textura" à água vista de cima, quando a
   // reflexão do céu já não tem contraste para mostrar a onda
@@ -149,7 +163,11 @@ void main() {
 
   // fallback: gradiente de céu na direção refletida
   vec3 R = reflect(-V, N);
-  vec3 skyFallback = mix(uHorizonColor, uZenithColor, pow(clamp(R.y, 0.0, 1.0), 0.40));
+  // A faixa de céu logo acima do horizonte é a mais clara de todas; refletida
+  // de raspão ela lava o mar. A água real também absorve e devolve azul, então
+  // essa faixa entra mais escura e mais profunda.
+  vec3 reflSky = mix(uHorizonColor * vec3(0.66, 0.78, 0.90), uZenithColor, pow(clamp(R.y, 0.0, 1.0), 0.34));
+  vec3 skyFallback = reflSky;
   skyFallback += uSunColor * pow(clamp(dot(R, uSunDir), 0.0, 1.0), 220.0) * 6.0;
   // 62% da reflexão planar + 38% do céu analítico na direção da normal local:
   // é essa parcela que faz cada faceta da onda refletir um pedaço diferente do
@@ -157,15 +175,24 @@ void main() {
   // A reflexão planar é a fonte principal (70%), mas 30% vêm do céu analítico na
   // direção da normal local. Antes eu zerava essa parcela quando o raio caía
   // abaixo do horizonte — era isso que deixava metade do mar sem estrutura.
-  refl = mix(skyFallback, refl, 0.70);
+  // Fora do frustum da câmera espelhada a UV é grampeada na borda do render
+  // target — era isso que espalhava uma faixa de céu pálido sobre o mar (o
+  // `valid` era calculado e nunca usado). Fora dali, céu analítico e pronto.
+  float edgeFade = smoothstep(0.0, 0.12, uv.x) * smoothstep(1.0, 0.88, uv.x)
+                 * smoothstep(0.0, 0.12, uv.y) * smoothstep(1.0, 0.88, uv.y);
+  edgeFade = clamp(edgeFade * valid, 0.0, 1.0);
+  refl = mix(skyFallback, refl, 0.70 * edgeFade);
 
   // Caminho do sol na água: no real o brilho refletido NÃO é um lençol liso —
   // as micro-ondas quebram a reflexão em milhares de cintilações. Aqui a
   // parcela luminosa da reflexão é modulada por ruído de alta frequência.
   float sparkNoise = texture2D(uFoamTex, vWorldPos.xz * 5.5 + vec2(uTime * 0.06, uTime * 0.028)).r;
   float reflLum = dot(refl, vec3(0.299, 0.587, 0.114));
-  float brightZone = smoothstep(0.35, 0.95, reflLum);
-  refl *= 1.0 - brightZone * (0.42 - 0.80 * sparkNoise) * (0.55 + 0.45 * clamp(dist * 0.02, 0.0, 1.0));
+  float brightZone = smoothstep(0.18, 0.82, reflLum);
+  // O céu refletido é pálido perto do horizonte. Deixar isso entrar inteiro
+  // transforma o rasante num lençol leitoso; o contraste vem de escurecer a
+  // parcela difusa e deixar só as cintilações em alta luz.
+  refl *= 1.0 - brightZone * (0.62 - 1.05 * sparkNoise) * (0.65 + 0.35 * clamp(dist * 0.02, 0.0, 1.0));
 
   vec3 col = mix(body, refl * uReflectionStrength, fresR);
 
@@ -191,7 +218,11 @@ void main() {
   float hullE = length(bq);
   float hullAO = exp(-pow(max(hullE - 0.62, 0.0) * 2.0, 2.0)) * uBoatShadow;
   // faixa de contato: a água encostada no casco (linha d'água + respingo)
-  float contact = smoothstep(1.02, 0.90, hullE) * smoothstep(0.82, 1.00, hullE);
+  // borda irregular: espuma na linha d'água não é um anel desenhado a compasso
+  float ringNoise = texture2D(uFoamTex, vWorldPos.xz * 0.55 + vec2(uTime * 0.015, -uTime * 0.011)).b;
+  float ringFine = texture2D(uFoamTex, vWorldPos.xz * 1.9 + vec2(-uTime * 0.05, uTime * 0.03)).r;
+  float eEdge = hullE + (ringNoise - 0.5) * 0.16 + (ringFine - 0.5) * 0.05;
+  float contact = smoothstep(1.04, 0.92, eEdge) * smoothstep(0.80, 1.02, eEdge);
   spec *= 1.0 - 0.85 * hullAO;
 
   // Dispersão cromática no brilho do sol: nas bordas do reflexo especular as
@@ -212,17 +243,27 @@ void main() {
   // crista "quebra". O ruído em três escalas quebra a mancha em bolhas.
   float crestGate = 1.0 - smoothstep(uFoamThreshold - 0.10, uFoamThreshold, vJacobian);
 
-  float fine = texture2D(uFoamTex, vWorldPos.xz * 0.42 - uWindDir * uTime * 0.20).r;
-  float mid = texture2D(uFoamTex, vWorldPos.xz * 0.115 - uWindDir * uTime * 0.05).g;
-  float coarse = texture2D(uFoamTex, vWorldPos.xz * 0.016 - uWindDir * uTime * 0.007).b;
-  float bubbles = fine * 0.55 + mid * 0.5 + coarse * 0.28;
+  // Três escalas no referencial do vento (as faixas de espuma são alongadas):
+  //   lace  = a "renda" que desenha a linha de espuma
+  //   fine  = as bolhas que a preenchem
+  //   speck = o salpicado fino, só perto da câmera
+  vec2 fWarp = vec2(dot(vWorldPos.xz, uWindDir), dot(vWorldPos.xz, crossWind));
+  float lace = texture2D(uFoamTex, fWarp * vec2(0.085, 0.26) - vec2(drift * 0.012, 0.0)).b;
+  lace *= lace * 1.35;
+  float fine = texture2D(uFoamTex, fWarp * vec2(0.34, 0.52) - vec2(drift * 0.05, 0.0)).r;
+  float speck = texture2D(uFoamTex, fWarp * vec2(0.95, 1.35) - vec2(drift * 0.14, 0.0)).a;
+  float fineFade = 1.0 - clamp(dist * 0.006, 0.0, 0.9);
+  float bubbles = lace * 0.66 + fine * (0.46 * fineFade) + speck * (0.16 * fineFade);
 
-  float t0 = 0.66 - 0.24 * crestGate;
-  float foam = smoothstep(t0, t0 + 0.09, bubbles) * crestGate;
+  // limiar estreito = borda nítida (espuma chapada de borda macia parece algodão)
+  float t0 = 0.63 - 0.20 * crestGate;
+  float foam = smoothstep(t0, t0 + 0.045, bubbles) * crestGate;
+  // granulado: quebra o interior liso da mancha em espuma de bolha
+  foam *= 0.42 + 1.05 * texture2D(uFoamTex, fWarp * vec2(0.62, 0.9) - vec2(drift * 0.09, 0.0)).g;
 
   // véu leve sobre cristas muito altas (mesmo sem compressão máxima)
-  float heightGate = smoothstep(0.55, 0.95, hNorm) * crestGate;
-  foam += heightGate * smoothstep(0.58, 0.78, bubbles) * 0.55;
+  float heightGate = smoothstep(0.62, 1.00, hNorm) * crestGate;
+  foam += heightGate * smoothstep(0.64, 0.84, bubbles) * 0.12;
 
   // estrutura fina: espuma real é uma malha de bolhas, não uma mancha chapada
   foam *= 0.45 + 0.85 * smoothstep(0.28, 0.80, fine);
@@ -231,10 +272,10 @@ void main() {
   foam *= 1.0 - 0.5 * smoothstep(0.4, 0.95, ndv); // espuma clinada para a câmera some um pouco
   foam *= 0.55 + 0.45 * smoothstep(0.0, 30.0, dist);
   // espuminha na linha d'água do casco (só perto do barco)
-  foam += contact * (0.16 + 0.34 * smoothstep(0.30, 0.72, bubbles)) * uBoatShadow;
+  foam += contact * (0.08 + 0.40 * smoothstep(0.30, 0.72, bubbles)) * (0.55 + 0.75 * ringNoise) * uBoatShadow;
 
   vec3 foamLit = uFoamColor * (0.35 + 0.75 * max(ndl, 0.0)) + skyAmbient * 0.35;
-  foamLit *= 0.82 + 0.30 * mid;
+  foamLit *= 0.80 + 0.34 * lace;
   col = mix(col, foamLit, clamp(foam, 0.0, 1.0));
 
   // ---------------- perspectiva atmosférica ----------------
