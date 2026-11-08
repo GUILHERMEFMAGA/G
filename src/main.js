@@ -468,7 +468,7 @@ function animate(now) {
   stats.fps = governor.fps;
   stats.targetFps = params.targetFps;
   stats.ms = governor.ms;
-  stats.quality = governor.label;
+  stats.quality = `${governor.label} · ${governor.ms.toFixed(1)} ms`;
 
   const dt = params.paused ? 0 : dtRaw * params.timeScale;
   simTime += dt;

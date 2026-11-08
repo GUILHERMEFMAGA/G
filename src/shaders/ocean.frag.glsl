@@ -137,7 +137,7 @@ void main() {
   // manchas de profundidade: água rasa sobre bancos, mais clara e esverdeada
   float depthVar = texture2D(uFoamTex, vWorldPos.xz * 0.0035 + vec2(uTime * 0.0004)).b;
   float turbidity = smoothstep(0.42, 0.85, depthVar) * 0.55;
-  vec3 body = mix(uDeepColor, uShallowColor, clamp(crest * 0.55 + turbidity, 0.0, 1.0));
+  vec3 body = mix(uDeepColor, uShallowColor, clamp(crest * 0.74 + turbidity, 0.0, 1.0));
   // relevo: encostas voltadas ao sol pegam mais luz, encostas afastadas escurecem
   vec3 sunH = normalize(vec3(uSunDir.x, 0.0, uSunDir.z) + vec3(1e-4, 0.0, 0.0));
   vec3 nH = normalize(vec3(N.x, 0.0, N.z) + vec3(1e-4, 0.0, 0.0));
@@ -148,11 +148,15 @@ void main() {
   // micro-sombreamento: onde a superfície se comprime (Jacobiano baixo) o vale
   // fica mais escuro — é isso que dá "textura" à água vista de cima, quando a
   // reflexão do céu já não tem contraste para mostrar a onda
-  body *= 0.90 + 0.20 * clamp(vJacobian, 0.0, 1.4);
+  body *= 0.84 + 0.30 * clamp(vJacobian, 0.0, 1.4);
   // luz do sol espalhada nas faces da onda: a face voltada ao sol clareia, a
   // face de sombra escurece — é o que dá "relevo" ao mar visto por cima
-  body *= 0.84 + 0.32 * clamp(dot(N, uSunDir) * 0.5 + 0.5, 0.0, 1.0);
+  body *= 0.70 + 0.55 * clamp(dot(N, uSunDir) * 0.5 + 0.5, 0.0, 1.0);
   body *= 1.0 + 0.10 * clamp(dot(normalize(vec3(N.x, 0.0, N.z) + 1e-5), vec3(uWindDir.x, 0.0, uWindDir.y)), -1.0, 1.0);
+  // contraste crista/vale: no real a crista é mais clara porque a luz atravessa
+  // a lâmina d'água; o vale é fundo e escuro. Sem isso o mar de perto fica
+  // uniforme, só com a cor chapada da água.
+  body *= mix(0.78, 1.16, smoothstep(0.25, 0.95, hNorm * 0.5 + 0.5));
 
   // espalhamento subsuperficial: luz que atravessa a onda na direção da câmera
   float sss = pow(clamp(dot(V, -uSunDir), 0.0, 1.0), 3.0);
@@ -270,6 +274,10 @@ void main() {
   //   fine  = as bolhas que a preenchem
   //   speck = o salpicado fino, só perto da câmera
   vec2 fWarp = vec2(dot(vWorldPos.xz, uWindDir), dot(vWorldPos.xz, crossWind));
+  // As linhas de espuma ficavam perfeitamente paralelas ("fileiras"). Em mar
+  // real a linha de crista serpenteia: deformar a UV com a própria ondulação
+  // grande (rd2, já amostrada) custa zero e quebra o alinhamento.
+  fWarp += vec2(rd2.x, rd2.y) * 3.6 + vec2(rd1.x, rd1.y) * 0.9;
   float lace = texture2D(uFoamTex, fWarp * vec2(0.105, 0.205) - vec2(drift * 0.012, 0.0)).b;
   lace *= lace * 1.35;
   float fine = texture2D(uFoamTex, fWarp * vec2(0.34, 0.52) - vec2(drift * 0.05, 0.0)).r;
