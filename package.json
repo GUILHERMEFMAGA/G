@@ -1,0 +1,22 @@
+{
+  "name": "oceano-3d",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Simulação 3D de oceano aberto: ondas espectrais, física de flutuação e renderização fisicamente inspirada",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "check": "node scripts/check.js",
+    "test:physics": "node scripts/testPhysics.js"
+  },
+  "dependencies": {
+    "lil-gui": "^0.19.2",
+    "three": "^0.169.0"
+  },
+  "devDependencies": {
+    "@shaderfrog/glsl-parser": "^7.0.1",
+    "vite": "^5.4.10"
+  }
+}

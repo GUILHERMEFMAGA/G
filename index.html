@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Oceano 3D — Mar realista com física de flutuação</title>
+    <meta
+      name="description"
+      content="Simulação 3D de oceano aberto em tempo real: espectro de ondas JONSWAP, reflexos, espuma, dispersão e física de flutuação de 6 graus de liberdade."
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+
+    <div id="hud">
+      <div class="panel" id="panel-info">
+        <h1>OCEANO <span>3D</span></h1>
+        <p class="sub">Mar espectral · física de flutuação</p>
+        <div class="rows">
+          <div class="row"><span>Vento</span><b id="hud-wind">—</b></div>
+          <div class="row"><span>Beaufort</span><b id="hud-beaufort">—</b></div>
+          <div class="row"><span>Altura signif. (Hs)</span><b id="hud-hs">—</b></div>
+          <div class="row"><span>Período de pico</span><b id="hud-tp">—</b></div>
+          <div class="row"><span>Onda sob o barco</span><b id="hud-wave">—</b></div>
+        </div>
+        <div class="divider"></div>
+        <div class="rows">
+          <div class="row"><span>Velocidade</span><b id="hud-speed">—</b></div>
+          <div class="row"><span>Banda (roll)</span><b id="hud-roll">—</b></div>
+          <div class="row"><span>Caturro (pitch)</span><b id="hud-pitch">—</b></div>
+          <div class="row"><span>Calado</span><b id="hud-draft">—</b></div>
+        </div>
+        <div class="divider"></div>
+        <div class="rows">
+          <div class="row"><span>Hora</span><b id="hud-hour">—</b></div>
+          <div class="row"><span>Deslocamento</span><b id="hud-mass">—</b></div>
+          <div class="row"><span>FPS</span><b id="hud-fps">—</b></div>
+          <div class="row"><span>Resolução</span><b id="hud-quality">—</b></div>
+        </div>
+      </div>
+      <div class="panel" id="panel-hint">
+        <p><b>W / S</b> acelera / ré · <b>A / D</b> leme · <b>Arrastar</b> orbitar · <b>Scroll</b> zoom</p>
+        <p class="muted">As ondas são geradas a partir do espectro de vento — mexa nos controles à direita.</p>
+      </div>
+    </div>
+
+    <div id="underwater"></div>
+
+    <div id="loader">
+      <div class="loader-inner">
+        <div class="wave-loader"><span></span><span></span><span></span></div>
+        <p>Gerando o oceano…</p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
